@@ -19,6 +19,7 @@ A cross-platform GUI application for managing iOS device pairing and wireless de
   - [Reynard Browser](https://github.com/minh-ton/reynard-browser)
   - [Auto Capture](https://apps.apple.com/us/app/dev-auto-capture/id6755616902)
   - [StosDebug](https://github.com/stossy11/StosDebug)
+  - [ByeTunes](https://github.com/EduAlexxis/ByeTunes)
 - **Developer Mode**: Monitor developer mode status
 - **Developer Disk Image Mounting**: Automatically mount required developer images
 
@@ -32,7 +33,7 @@ A cross-platform GUI application for managing iOS device pairing and wireless de
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/jkcoxson/idevice_pair.git
+   git clone https://github.com/EduAlexxis/idevice_pair.git
    cd idevice_pair
    ```
 
