@@ -1,0 +1,132 @@
+name: Build macOS
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  BINARY_NAME: idevice_pair
+  APP_NAME: idevice_pair
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-macos:
+    name: Build Universal macOS DMG
+    runs-on: macos-latest
+    env:
+      HAVE_SIGNING_SECRETS: ${{ secrets.DEV_ID_P12_BASE64 != '' && secrets.DEV_ID_P12_PASSWORD != '' && secrets.DEV_IDENTITY_NAME != '' }}
+      HAVE_NOTARIZE_SECRETS: ${{ secrets.NOTARIZE_APPLE_ID != '' && secrets.NOTARIZE_APP_SPECIFIC_PASS != '' && secrets.NOTARIZE_TEAM_ID != '' }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-universal-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-cargo-
+
+      - name: Build Intel Slice (x86_64)
+        run: cargo build --release --no-default-features --bin ${{ env.BINARY_NAME }} --target x86_64-apple-darwin
+
+      - name: Build Apple Silicon Slice (aarch64)
+        run: cargo build --release --no-default-features --bin ${{ env.BINARY_NAME }} --target aarch64-apple-darwin
+
+      - name: Import Developer ID Certificate
+        if: env.HAVE_SIGNING_SECRETS == 'true'
+        uses: apple-actions/import-codesign-certs@v6
+        with:
+          p12-file-base64: ${{ secrets.DEV_ID_P12_BASE64 }}
+          p12-password: ${{ secrets.DEV_ID_P12_PASSWORD }}
+
+      - name: Create Universal App Bundle
+        run: |
+          APP="${{ env.APP_NAME }}.app"
+          VERSION="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+
+          lipo \
+            target/x86_64-apple-darwin/release/${{ env.BINARY_NAME }} \
+            target/aarch64-apple-darwin/release/${{ env.BINARY_NAME }} \
+            -create -output "$APP/Contents/MacOS/${{ env.APP_NAME }}"
+
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+                   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>${{ env.APP_NAME }}</string>
+            <key>CFBundleDisplayName</key><string>${{ env.APP_NAME }}</string>
+            <key>CFBundleIdentifier</key><string>com.github.se2cird2.${{ env.APP_NAME }}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleExecutable</key><string>${{ env.APP_NAME }}</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleIconFile</key><string>icon.icns</string>
+            <key>CFBundleIconName</key><string>icon</string>
+          </dict></plist>
+          EOF
+
+          cp icon.icns "$APP/Contents/Resources/"
+          cp Assets.car "$APP/Contents/Resources/"
+          xattr -rc "$APP"
+
+      - name: Code-sign with Hardened Runtime & Timestamp
+        if: env.HAVE_SIGNING_SECRETS == 'true'
+        run: |
+          APP="${{ env.APP_NAME }}.app"
+          codesign --force --deep --options runtime --timestamp \
+            --sign "${{ secrets.DEV_IDENTITY_NAME }}" "$APP"
+
+      - name: Fix Permissions
+        run: |
+          APP="${{ env.APP_NAME }}.app"
+          find "$APP" -type d -exec chmod 755 {} +
+          find "$APP" -type f -exec chmod 644 {} +
+          chmod +x "$APP/Contents/MacOS/${{ env.APP_NAME }}"
+
+      - name: Create DMG
+        run: |
+          DMG="dist/${{ env.APP_NAME }}--macos-universal.dmg"
+          mkdir -p dist dmg-staging
+          trap 'rm -rf dmg-staging' EXIT
+          mv "${{ env.APP_NAME }}.app" dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+          APP_SIZE_KB="$(du -sk dmg-staging | awk '{ print $1 }')"
+          DMG_SIZE_KB="$((APP_SIZE_KB * 2 + 131072))"
+          sync
+          hdiutil create \
+            -volname "${{ env.APP_NAME }}" \
+            -srcfolder dmg-staging \
+            -size "${DMG_SIZE_KB}k" \
+            -ov -format UDZO \
+            "$DMG"
+          echo "$DMG" > dmg-path.txt
+
+      - name: Notarize & Staple DMG
+        if: env.HAVE_NOTARIZE_SECRETS == 'true'
+        run: |
+          DMG=$(cat dmg-path.txt)
+          xcrun notarytool submit "$DMG" \
+            --apple-id "${{ secrets.NOTARIZE_APPLE_ID }}" \
+            --password "${{ secrets.NOTARIZE_APP_SPECIFIC_PASS }}" \
+            --team-id "${{ secrets.NOTARIZE_TEAM_ID }}" \
+            --wait --verbose
+          xcrun stapler staple "$DMG"
+
+      - name: Upload Universal DMG
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APP_NAME }}--macos-universal
+          path: dist/${{ env.APP_NAME }}--macos-universal.dmg

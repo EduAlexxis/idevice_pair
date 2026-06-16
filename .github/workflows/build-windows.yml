@@ -1,0 +1,49 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  BINARY_NAME: idevice_pair
+  APP_NAME: idevice_pair
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    name: Build Windows x86_64
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x86_64-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-cargo-
+
+      - name: Build binary
+        shell: bash
+        run: |
+          cargo build --release --no-default-features --bin ${{ env.BINARY_NAME }} --target x86_64-pc-windows-msvc
+          mkdir -p dist
+          cp target/x86_64-pc-windows-msvc/release/${{ env.BINARY_NAME }}.exe \
+            dist/${{ env.APP_NAME }}--windows-x86_64.exe
+
+      - name: Upload Windows bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APP_NAME }}--windows-x86_64
+          path: dist/*.exe

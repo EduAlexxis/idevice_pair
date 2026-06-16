@@ -1,0 +1,104 @@
+name: Build Linux
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  BINARY_NAME: idevice_pair
+  APP_NAME: idevice_pair
+  ICON_PNG: icon.png
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: Build Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            toolfile: appimagetool-x86_64.AppImage
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            toolfile: appimagetool-aarch64.AppImage
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Use Wild linker
+        uses: davidlattimore/wild-action@latest
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            appstream \
+            libatk1.0-dev \
+            libfuse2t64 \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            pkg-config \
+            usbmuxd
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: linux-cargo-
+
+      - name: Build binary
+        run: cargo build --release --no-default-features --bin ${{ env.BINARY_NAME }} --target ${{ matrix.target }}
+
+      - name: Download appimagetool
+        run: |
+          wget -c https://github.com/AppImage/AppImageKit/releases/download/continuous/${{ matrix.toolfile }} \
+            -O appimagetool.AppImage
+          chmod +x appimagetool.AppImage
+
+      - name: Prepare AppDir
+        run: |
+          mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/icons/hicolor/256x256/apps AppDir/etc/udev/rules.d
+          cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} AppDir/usr/bin/
+          cp "$(which usbmuxd)" AppDir/usr/bin/
+          sudo cp /lib/udev/rules.d/39-usbmuxd.rules AppDir/etc/udev/rules.d/
+          ICON_NAME=${ICON_PNG##*/}; BASENAME=${ICON_NAME%.*}
+          cp "${{ env.ICON_PNG }}" "AppDir/${BASENAME}.png"
+          cp "${{ env.ICON_PNG }}" "AppDir/usr/share/icons/hicolor/256x256/apps/${BASENAME}.png"
+          cat > AppDir/${{ env.BINARY_NAME }}.desktop <<EOF
+          [Desktop Entry]
+          Type=Application
+          Name=${{ env.APP_NAME }}
+          Exec=${{ env.BINARY_NAME }} %u
+          Icon=${BASENAME}
+          Categories=Utility;
+          EOF
+          ln -s usr/bin/${{ env.BINARY_NAME }} AppDir/AppRun
+          chmod +x AppDir/AppRun
+
+      - name: Build AppImage
+        run: |
+          mkdir -p dist
+          FILENAME="dist/${{ env.APP_NAME }}--linux-${{ matrix.arch }}.AppImage"
+          ./appimagetool.AppImage AppDir "$FILENAME"
+
+      - name: Upload Linux bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APP_NAME }}--linux-${{ matrix.arch }}
+          path: dist/*
